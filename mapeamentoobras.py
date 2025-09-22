@@ -491,8 +491,6 @@ for i, v in enumerate(valores_milhoes):
 plt.tight_layout()
 plt.show()
 
-"""# ARIADNE"""
-
 print("\nInformações sobre as colunas:")
 df.info()
 
