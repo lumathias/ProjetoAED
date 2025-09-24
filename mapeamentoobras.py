@@ -24,21 +24,52 @@ import networkx as nx
 import numpy as np
 import io
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import plotly.graph_objects as go
 from collections import defaultdict
 from nxviz import CircosPlot
 from itertools import combinations
 
-# Importação do computador
-from google.colab import files
-uploaded = files.upload()
-
-# Carregando o arquivo CSV
+# Para carregar o arquivo direto do diretório, deve ser feito o upload para a sessão
 df = pd.read_csv('obras.csv', sep=';')
+
+# Para carregar o arquivo direto da pasta drive, deve ser feito o upload para a sessão
+# from google.colab import drive
+# df = drive.mount('/content/drive')
 
 print(df.head())
 
 """# Processamento"""
+
+def limpar_valor(valor_str):
+    # Remove R$, espaços, pontos e troca vírgula por ponto (decimal)
+    if isinstance(valor_str, str):
+        # 1. Remove R$ e espaços
+        valor_str = valor_str.replace('R$', '').strip()
+        # 2. Remove o ponto de milhares ('.')
+        valor_str = valor_str.replace('.', '')
+        # 3. Troca a vírgula decimal (',') pelo ponto ('.')
+        valor_str = valor_str.replace(',', '.')
+    try:
+        return float(valor_str)
+    except ValueError:
+        return 0.0 # Retorna zero se a conversão falhar
+
+# Aplica a limpeza
+df['valor_float'] = df['valor'].apply(limpar_valor)
+
+# Pré-limpeza da coluna empresa (remover espaços e aspas extras)
+df['empresa'] = df['empresa'].str.strip().str.replace('"', '')
+
+# Trata Unidades Responsáveis vazias ou com apenas aspas (visto no exemplo de dados)
+df['unidade_responsavel'] = df['unidade_responsavel'].str.strip().str.replace('"', '')
+df['unidade_responsavel'].replace('', 'NAO_INFORMADA', inplace=True)
+df['unidade_responsavel'].fillna('NAO_INFORMADA', inplace=True)
+
+print("DataFrame Limpo (Primeiras Linhas e Valores):")
+print(df[['id_obra', 'empresa', 'valor', 'valor_float', 'status_obra']].head())
+
+print("Limpeza de dados concluída.")
 
 # CRIAÇÃO DO GRAFO (Nós e Arestas)
 
@@ -51,21 +82,16 @@ empresas_nodes = df['empresa'].unique()
 G.add_nodes_from(obras_nodes, bipartite=0, type='Obra')
 G.add_nodes_from(empresas_nodes, bipartite=1, type='Empresa')
 
-# limpa e converte 'valor' p/ valor numericoantes de add atributos de nós e arestas
-df['valor_numeric'] = df['valor'].astype(str).str.replace('R$', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.strip()
-df['valor_numeric'] = pd.to_numeric(df['valor_numeric'], errors='coerce')
-
-
 # adiciona arestas (Obra <--> Empresa)
 for index, row in df.iterrows():
     id_obra = row['id_obra']
     empresa = row['empresa']
-    valor_numeric = row['valor_numeric']
+    valor_float = row['valor_float']
     status = row['status_obra']
 
-    # add aresta com 'valor_numeric' como peso
-    if pd.notna(valor_numeric): # só add aresta se valor não for NaN
-        G.add_edge(id_obra, empresa, weight=valor_numeric, status_obra=status)
+    # add aresta com 'valor_float' como peso
+    if pd.notna(valor_float): # só add aresta se valor não for NaN
+        G.add_edge(id_obra, empresa, weight=valor_float, status_obra=status)
 
 # adicionar atributos aos Nós
 # status da obra --> nós de obra, e o valor total --> empresa
@@ -76,7 +102,7 @@ for node in G.nodes():
         G.nodes[node]['status'] = obra_data.get('status_obra', 'Unknown')
         G.nodes[node]['unidade'] = obra_data.get('unidade_responsavel')
         # Add o valor numerico como um atributo para os nós de Obra
-        G.nodes[node]['valor_associado'] = obra_data.get('valor_numeric', 0)
+        G.nodes[node]['valor_associado'] = obra_data.get('valor_float', 0)
     elif G.nodes[node]['type'] == 'Empresa':
         # Calcula o valor total de projetos da empresa somando os pesos
         total_valor = sum(data.get('weight', 0) for u, v, data in G.edges(node, data=True))
@@ -108,22 +134,10 @@ assortativity = nx.degree_assortativity_coefficient(G)
 print(f"\nAssortatividade por Grau: {assortativity:.4f}")
 # é esperado próximo de 0 para obra-empresa
 
-# DISTRIBUIÇÃO DE PROBABILIDADE/HISTOGRAMA DOS GRAUS
-
-degrees = [degree for node, degree in G.degree()]
-plt.figure(figsize=(20, 8))
-plt.hist(degrees, bins=range(min(degrees), max(degrees) + 2), align='left', color='skyblue', edgecolor='black')
-plt.title('Histograma da Distribuição de Graus')
-plt.xlabel('Grau do Nó (Número de Conexões)')
-plt.ylabel('Frequência')
-plt.xticks(range(min(degrees), max(degrees) + 1))
-plt.grid(axis='y', alpha=0.5)
-plt.show()
-
 # VISUALIZAÇÃO DO GRAFO (NETWORKX/MATPLOTLIB)
 
-plt.figure(figsize=(15, 15)) # Increased figure size for better visualization
-pos = nx.spring_layout(G, k=0.5, seed=42) # Added seed for reproducible layout and adjusted k
+plt.figure(figsize=(15, 15)) # aumento da imagem para visualização
+pos = nx.spring_layout(G, k=0.5, seed=42) # Add seed p/ reprodutibilidade de layout e k ajustado
 
 # Configuração de Cores e Tamanhos
 node_colors = []
@@ -134,12 +148,12 @@ edge_widths = []
 for node in G.nodes():
     if G.nodes[node]['type'] == 'Empresa':
         node_colors.append('red')
-        # Size of company nodes based on their degree (number of projects)
-        node_sizes.append(G.degree(node) * 50) # Scaled for better visibility
+        # tamanho do nó empresa baseado em seus graus (numero de projetos)
+        node_sizes.append(G.degree(node) * 50) # p/ melhorar visibilidade
         labels[node] = node
     else: # Obra
         # Cor da obra baseada no Status [3]
-        status = G.nodes[node].get('status', 'Unknown') # Handle potential missing status
+        status = G.nodes[node].get('status', 'Unknown') # missing status possíveis
         if status == 'Atrasada':
             node_colors.append('orange')
         elif status == 'Em Andamento':
@@ -148,14 +162,14 @@ for node in G.nodes():
             node_colors.append('green')
 
         # Tamanho do nó da obra baseado no valor (ponderação)
-        # Get the numeric value from the edge connected to the work node
-        # Since it's a bipartite graph, each work node is connected to exactly one company node
-        valor_numeric = 0
+        # pega o valor numerico da aresta conectada ao nó
+        # cada nó é conectado exatamente a um nó de empresa
+        valor_float = 0
         for u, v, data in G.edges(node, data=True):
-            valor_numeric = data.get('weight', 0)
-            break # Assuming one edge per work node in this context
+            valor_float = data.get('weight', 0)
+            break # Assume uma aresta por nó
 
-        node_sizes.append(valor_numeric / 5000) # Scaled for better visibility
+        node_sizes.append(valor_float / 5000)
         labels[node] = str(node) # Mostra o ID da obra
 
 # Desenho dos Nós
@@ -163,50 +177,18 @@ nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=node_sizes, alp
 
 # Desenho das Arestas (Ponderação visual: espessura da linha baseada no valor)
 for u, v, data in G.edges(data=True):
-    # Escala a largura da aresta (dividir por um fator grande)
-    edge_widths.append(data.get('weight', 0) / 500000) # Scaled for better visibility
+    edge_widths.append(data.get('weight', 0) / 500000)
 
 nx.draw_networkx_edges(G, pos, width=edge_widths, alpha=0.4, edge_color='gray')
 
-# Desenho dos Rótulos
-nx.draw_networkx_labels(G, pos, labels=labels, font_size=8) # Adjusted font size
+# Desenho dos rótulos
+nx.draw_networkx_labels(G, pos, labels=labels, font_size=8)
 
 plt.title('Grafo Bipartido: Obras vs. Empresas (Tamanho pelo Valor do Contrato)')
 plt.axis('off')
 plt.show()
 
-# ----------------------------------------------------
-# Interpretação da Visualização
-# A empresa 'Construtora Alfa' (nó vermelho) é um hub de alto grau.
-# A Obra 'Nova Biblioteca' (laranja, atrasada) tem o maior valor (maior tamanho).
-# ----------------------------------------------------
-
-def limpar_valor(valor_str):
-    """Remove R$, espaços, pontos (milhares) e troca vírgula por ponto (decimal)."""
-    if isinstance(valor_str, str):
-        # 1. Remove R$ e espaços
-        valor_str = valor_str.replace('R$', '').strip()
-        # 2. Remove o ponto de milhares ('.')
-        valor_str = valor_str.replace('.', '')
-        # 3. Troca a vírgula decimal (',') pelo ponto ('.')
-        valor_str = valor_str.replace(',', '.')
-    try:
-        return float(valor_str)
-    except ValueError:
-        return 0.0 # Retorna zero se a conversão falhar
-
-# Aplica a limpeza
-df['valor_float'] = df['valor'].apply(limpar_valor)
-
-# Pré-limpeza da coluna empresa (remover espaços e aspas extras)
-df['empresa'] = df['empresa'].str.strip().str.replace('"', '')
-
-print("DataFrame Limpo (Primeiras Linhas e Valores):")
-print(df[['id_obra', 'empresa', 'valor', 'valor_float', 'status_obra']].head())
-
-# ----------------------------------------------------
-# 2.1 CRIAÇÃO DO GRAFO E ATRIBUIÇÃO DE PARTIÇÕES
-# ----------------------------------------------------
+# CRIAÇÃO DO GRAFO E ATRIBUIÇÃO DE PARTIÇÕES
 G = nx.Graph()
 
 obras_nodes = df['id_obra'].unique()
@@ -237,21 +219,21 @@ for index, row in df.iterrows():
 
 print(f"\nGrafo Bipartido criado com {G.number_of_nodes()} nós e {G.number_of_edges()} arestas.")
 
-# Se houver poucos dados (como neste exemplo), pulamos a filtragem extrema para não esvaziar o grafo.
+# Filtragem
 if G.number_of_nodes() > 10:
 
-    # 3.1 Identificar Hubs (Exemplo: Top 5 empresas por grau)
+    # Identificar Hubs
     degree_empresas = {n: d for n, d in G.degree() if G.nodes[n]['bipartite'] == 1}
     top_empresas = sorted(degree_empresas, key=degree_empresas.get, reverse=True)[:5]
 
-    # 3.2 Obras de Alto Risco/Valor
+    # Obras de Alto Risco/Valor
     risco_obras = [n for n in G.nodes() if G.nodes[n].get('status') in ['Atrasada', 'Paralisada']]
 
-    # Obras mais caras (ex: acima da média ou do 90º percentil)
-    todos_valores = [G.nodes[n]['valor'] for n in G.nodes() if G.nodes[n]['type'] == 'Obra']
+    # Obras mais caras (acima da média ou do 90º percentil)
+    todos_valores = [G.nodes[n]['valor'] for n in G.nodes() if G.nodes[n]['type'] == 'Obra'] # Corrected attribute name
     if todos_valores:
         valor_corte = np.percentile(todos_valores, 90)
-        valor_obras = [n for n in G.nodes() if G.nodes[n].get('valor', 0) >= valor_corte and G.nodes[n]['type'] == 'Obra']
+        valor_obras = [n for n in G.nodes() if G.nodes[n].get('valor', 0) >= valor_corte and G.nodes[n]['type'] == 'Obra'] # Corrected attribute name
     else:
         valor_obras = []
 
@@ -264,17 +246,15 @@ else:
 
 # Separa as partições do subgrafo de foco
 obras_foco = [n for n in G_foco.nodes() if G_foco.nodes[n]['bipartite'] == 0]
-empresas_foco = [n for n in G_foco.nodes() if G_foco.nodes[n]['bipartite'] == 1]
+empresas_foco = [n for n in G_foco.nodes() if G_foco.nodes[n]['bipartite'] == 1] # Corrected attribute name
 
-# ----------------------------------------------------
-# 4.1 VISUALIZAÇÃO ESTRUTURADA (LAYOUT BI-PARTIDO)
-# ----------------------------------------------------
+# VISUALIZAÇÃO ESTRUTURADA (BI-PARTIDO)
 
-# Aplica o layout bi-partido (separa Obras e Empresas visualmente)
+# separa Obras e Empresas visualmente
 try:
     pos = nx.bipartite_layout(G_foco, obras_foco)
 except ValueError:
-    # Se uma das partições estiver vazia após a filtragem, use um layout padrão
+    # se uma das partições estiver vazia após a filtragem, usa layout padrão
     pos = nx.spring_layout(G_foco)
 
 
@@ -287,18 +267,18 @@ for node in G_foco.nodes():
     node_type = G_foco.nodes[node]['type']
 
     if node_type == 'Empresa':
-        node_colors.append('gray') # Empresas em cinza
+        node_colors.append('lightblue') # Empresas em azul
         node_sizes.append(1000 + G_foco.degree[node] * 100) # Tamanho pelo Grau (Hubs)
-        labels[node] = node.split(' - ')[-1] # Usa apenas o nome, se o CNPJ/CPF for longo
+        labels[node] = node.split(' - ')[-1] # Usa nome, se CNPJ/CPF for longo
     else: # Obra
         status = G_foco.nodes[node]['status']
-        valor = G_foco.nodes[node]['valor']
+        valor = G_foco.nodes[node]['valor'] # Corrected attribute name
 
-        # Mapeamento de cor pelo Status (Análise de Risco)
-        if status in ['Atrasada', 'Paralisada']:
+        # mapeamento de cor pelo Status (Análise de Risco)
+        if status in ['CONTRATO FINALIZADO', 'CONTRATO RESCINDIDO', 'SUSPENSA']:
             node_colors.append('red') # Risco
-        elif status == 'Em Andamento':
-            node_colors.append('orange')
+        elif status in ['EM RECEBIMENTO PROVISÓRIO', 'EM ANDAMENTO']:
+            node_colors.append('yellow')
         else: # Finalizada/Concluída
             node_colors.append('green')
 
@@ -308,111 +288,27 @@ for node in G_foco.nodes():
         labels[node] = node # ID da Obra
 
 # Espessura da aresta pelo Valor
-edge_widths = [data['weight'] / 100000 for u, v, data in G_foco.edges(data=True)]
+edge_widths = [data['weight'] / 1000000 for u, v, data in G_foco.edges(data=True)]
 
 plt.figure(figsize=(15, 10))
-plt.title('Grafo Bipartido Focado: Obras vs. Empresas (Status e Valor)', fontsize=16)
+plt.title('Grafo Bipartido 1: Obras vs. Empresas (Status e Valor)', fontsize=16)
 
 # Desenho
 nx.draw_networkx_nodes(G_foco, pos, node_color=node_colors, node_size=node_sizes, alpha=0.8)
-nx.draw_networkx_edges(G_foco, pos, width=edge_widths, alpha=0.5, edge_color='black')
+nx.draw_networkx_edges(G_foco, pos, width=edge_widths, alpha=0.5, edge_color='purple')
 nx.draw_networkx_labels(G_foco, pos, labels=labels, font_size=8, verticalalignment='center')
 
 plt.axis('off')
 plt.show()
 
-# ----------------------------------------------------
-# 1. CRIANDO O GRAFO DE CO-OCORRÊNCIA (Projeção)
-# ----------------------------------------------------
+# CRIAÇÃO DO GRAFO: OBRA <--> UNIDADE RESPONSÁVEL
 
-# Vamos projetar a partir da relação Obra-Empresa.
-# Duas empresas estão ligadas se trabalharam na mesma Obra (embora seja mais comum ligar por Projeto/Licitação, para demonstração usaremos Obra).
-
-# Criar um grafo de co-ocorrência (monopartido)
-G_co = nx.Graph()
-empresas_unicas = df['empresa'].unique()
-G_co.add_nodes_from(empresas_unicas)
-
-# Dicionário para armazenar a frequência de co-ocorrência
-co_ocorrencia = {}
-
-# Itera sobre todas as obras
-for id_obra in df['id_obra'].unique():
-    # Encontra todas as empresas envolvidas na OBRA
-    empresas_na_obra = df[df['id_obra'] == id_obra]['empresa'].tolist()
-
-    # Se houver mais de uma empresa na obra (muito raro em construção, mas comum em licitações/projetos), ligue-as
-    if len(empresas_na_obra) >= 2:
-        # Cria todas as combinações (pares) de empresas
-        from itertools import combinations
-        for emp1, emp2 in combinations(empresas_na_obra, 2):
-            if emp1 != emp2:
-                # Ordena o par para garantir que a chave do dicionário seja única
-                par = tuple(sorted((emp1, emp2)))
-                co_ocorrencia[par] = co_ocorrencia.get(par, 0) + 1
-
-# 2. Adicionar as Arestas Ponderadas ao Grafo
-for (emp1, emp2), peso in co_ocorrencia.items():
-    G_co.add_edge(emp1, emp2, weight=peso)
-
-print(f"\nGrafo de Co-ocorrência criado com {G_co.number_of_nodes()} nós (apenas Empresas).")
-
-
-# ----------------------------------------------------
-# 3. VISUALIZAÇÃO DO GRAFO DE CO-OCORRÊNCIA
-# ----------------------------------------------------
-
-plt.figure(figsize=(12, 8))
-pos_co = nx.spring_layout(G_co, k=0.5) # Spring layout funciona bem em grafos menores
-
-# Calcula o grau dos nós para dimensionamento
-degree_map = [G_co.degree(node) * 100 for node in G_co.nodes()]
-
-# Desenha os nós (empresas)
-nx.draw_networkx_nodes(G_co, pos_co, node_size=degree_map, node_color='purple', alpha=0.7)
-
-# Desenha as arestas (espessura pelo peso da co-ocorrência)
-edges = G_co.edges(data=True)
-weights = [d['weight'] for u, v, d in edges]
-nx.draw_networkx_edges(G_co, pos_co, width=np.array(weights) * 2, alpha=0.6, edge_color='black')
-
-# Desenha os rótulos
-labels = {node: node.split(' - ')[-1] for node in G_co.nodes()} # Limpa os rótulos
-nx.draw_networkx_labels(G_co, pos_co, labels=labels, font_size=9)
-
-plt.title("Grafo de Co-ocorrência de Empresas", fontsize=16)
-plt.axis('off')
-plt.show()
-
-def limpar_valor(valor_str):
-    """Remove R$, espaços, pontos (milhares) e troca vírgula por ponto (decimal)."""
-    if isinstance(valor_str, str):
-        valor_str = valor_str.replace('R$', '').strip()
-        valor_str = valor_str.replace('.', '')
-        valor_str = valor_str.replace(',', '.')
-    try:
-        return float(valor_str)
-    except ValueError:
-        return 0.0
-
-df['valor_float'] = df['valor'].apply(limpar_valor)
-
-# Trata Unidades Responsáveis vazias ou com apenas aspas (visto no exemplo de dados)
-df['unidade_responsavel'] = df['unidade_responsavel'].str.strip().str.replace('"', '')
-df['unidade_responsavel'].replace('', 'NAO_INFORMADA', inplace=True)
-df['unidade_responsavel'].fillna('NAO_INFORMADA', inplace=True)
-
-print("Limpeza de dados concluída.")
-
-# ----------------------------------------------------
-# 2.1 CRIAÇÃO DO GRAFO OBRA <--> UNIDADE RESPONSÁVEL
-# ----------------------------------------------------
 G_unidade = nx.Graph()
 
 obras_nodes = df['id_obra'].unique()
 unidades_nodes = df['unidade_responsavel'].unique()
 
-# Adiciona Nós (Partição 0: Obras, Partição 1: Unidades)
+# Adiciona Nós (partição 0: obras, partição 1: unidades)
 for id_obra in obras_nodes:
     obra_data = df[df['id_obra'] == id_obra]
     G_unidade.add_node(id_obra,
@@ -426,29 +322,24 @@ for unidade in unidades_nodes:
                        bipartite=1,
                        type='Unidade')
 
-# Adiciona Arestas Ponderadas (Peso = Valor da Obra)
+# Peso = Valor da Obra (arestas ponderadas)
 for index, row in df.iterrows():
-    if row['unidade_responsavel'] != 'NAO_INFORMADA':
-        G_unidade.add_edge(row['id_obra'],
-                           row['unidade_responsavel'],
-                           weight=row['valor_float'])
+    G_unidade.add_edge(row['id_obra'], row['unidade_responsavel'], weight=row['valor_float'])
 
 print(f"Grafo Obra-Unidade criado com {G_unidade.number_of_nodes()} nós e {G_unidade.number_of_edges()} arestas.")
 
-# ----------------------------------------------------
-# 3.1 CÁLCULO DO GRAU PONDERADO
-# ----------------------------------------------------
+# CÁLCULO DO GRAU PONDERADO
 
-# Calcular o grau ponderado (soma dos pesos das arestas)
+# soma dos pesos das arestas
 weighted_degree = G_unidade.degree(weight='weight')
 
-# Filtrar apenas os nós que são Unidades Responsáveis
+# Filtra apenas os nós que são unidades_responsaveis
 weighted_degree_unidades = {}
 for node, degree in weighted_degree:
     if G_unidade.nodes[node]['type'] == 'Unidade':
         weighted_degree_unidades[node] = degree
 
-# Converter para DataFrame para facilitar a ordenação e visualização
+# converte para DataFrame para facilitar a ordenação e visualização
 df_analise = pd.DataFrame(
     list(weighted_degree_unidades.items()),
     columns=['Unidade Responsável', 'Valor Total Acumulado']
@@ -486,7 +377,7 @@ plt.grid(axis='x', linestyle='--', alpha=0.7) # valor em X
 # Adicionar o valor exato no final de cada barra (no eixo X)
 for i, v in enumerate(valores_milhoes):
     plt.text(v + (valores_milhoes.max() * 0.01), i,
-             f'{v:.2f} M', ha='left', va='center', fontsize=9)
+             f'{v:.4f} M', ha='left', va='center', fontsize=9)
 
 plt.tight_layout()
 plt.show()
@@ -494,13 +385,9 @@ plt.show()
 print("\nInformações sobre as colunas:")
 df.info()
 
-# Carregar o arquivo CSV
-df = pd.read_csv('obras.csv', sep=';')
-
-# --- Tratamento de Dados Essencial ---
-# Com base na análise dos metadados, as colunas 'empresa' e 'unidade_responsavel'
-# têm contagens de valores não nulos diferentes do total de entradas.
-# Vamos remover as linhas onde qualquer uma dessas colunas essenciais seja nula.
+# Tratamento de Dados Essencial ---
+# as colunas 'empresa' e 'unidade_responsavel' possuem valores nulos
+# assim, removemos as linhas onde qualquer uma dessas colunas é nula
 df_limpo = df.dropna(subset=['empresa', 'unidade_responsavel']).copy()
 
 # manter a consistência
@@ -509,15 +396,15 @@ df_limpo['unidade_responsavel'] = df_limpo['unidade_responsavel'].str.strip()
 
 print(f"Número de registros válidos após a limpeza: {len(df_limpo)}")
 
-# Criar um grafo vazio não direcionado [4]
+# Cria grafo vazio não direcionado
 B = nx.Graph()
 
-# Extrair listas de nós únicos para cada conjunto
+# Extrai listas de nós únicos para cada conjunto
 empresas = df_limpo['empresa'].unique()
 unidades = df_limpo['unidade_responsavel'].unique()
 
-# Adicionar os nós ao grafo, especificando a qual conjunto pertencem
-# O atributo 'bipartite' é uma convenção do NetworkX para identificar os conjuntos
+# Adiciona os nós ao grafo, especificando o conjunto a que pertencem
+# 'bipartite' é uma convenção de NetworkX pra identificar os conjuntos
 B.add_nodes_from(empresas, bipartite=0)
 B.add_nodes_from(unidades, bipartite=1)
 
@@ -589,15 +476,14 @@ plt.grid(axis='y', linestyle='--')
 plt.show()
 
 # Limpeza e preparação para o Grafo Bipartido
-# Conforme os metadados, precisamos das colunas 'empresa' e 'unidade_responsavel' sem nulos [3, 4]
+# Colunas 'empresa' e 'unidade_responsavel' sem nulos [3, 4]
 df_bipartido = df.dropna(subset=['empresa', 'unidade_responsavel']).copy()
 df_bipartido['empresa'] = df_bipartido['empresa'].str.strip()
 df_bipartido['unidade_responsavel'] = df_bipartido['unidade_responsavel'].str.strip()
 print(f"Registros válidos para o grafo bipartido: {len(df_bipartido)}")
-print("-" * 50 + "\n")
 
-# Bloco 2: Criação do grafo
-print("--- Iteração 2: Transformando Dados em um Grafo Bipartido ---")
+# Criação do grafo
+print("Iteração 2: Transformando Dados em um Grafo Bipartido ")
 
 B = nx.Graph()
 
@@ -616,9 +502,8 @@ B.add_edges_from(arestas_bipartido)
 print("Grafo Bipartido (B) criado.")
 print(f"  - Nós: {B.number_of_nodes()} ({len(empresas)} Empresas, {len(unidades)} Unidades)")
 print(f"  - Arestas: {B.number_of_edges()}")
-print("-" * 50 + "\n")
 
-# --- VISUALIZAÇÃO DO GRAFO ---
+# VISUALIZAÇÃO DO GRAFO
 
 print("Iniciando a visualização do grafo...")
 
@@ -637,18 +522,18 @@ pos.update((node, (0, i)) for i, node in enumerate(empresas_nodes))
 # Posições para as unidades (lado direito, x=1)
 pos.update((node, (1, i)) for i, node in enumerate(unidades_nodes))
 
-# 2. Definir cores e tamanhos para os nós
+# definir cores e tamanhos para os nós
 graus = dict(B.degree())
 for node in B.nodes():
-    if B.nodes[node]['bipartite'] == 0:  # Se for empresa
+    if B.nodes[node]['bipartite'] == 0:  # caso empresa
         cores_nos.append('skyblue')
-    else:  # Se for unidade
+    else:  # caso unidade
         cores_nos.append('lightgreen')
-    # O tamanho do nó será proporcional ao seu grau (multiplicado por um fator para melhor visualização)
+    # tamanho do nó é proporcional ao seu grau
     tamanhos_nos.append(graus[node] * 100)
 
-# 3. Desenhar o grafo
-plt.figure(figsize=(12, 18))  # Ajuste o tamanho conforme necessário
+# Desenhar o grafo
+plt.figure(figsize=(12, 16))  # Ajuste o tamanho conforme necessário
 nx.draw(B,
         pos=pos,
         with_labels=True,
@@ -659,7 +544,7 @@ nx.draw(B,
         width=0.5,  # Espessura das arestas
         alpha=0.8)
 
-# 4. Adicionar legendas e título
+# Adicionar legendas e título
 plt.title("Grafo Bipartido: Relações entre Empresas e Unidades Responsáveis", fontsize=16)
 # Adicionando uma legenda manual
 plt.text(-0.1, max(len(empresas_nodes), len(unidades_nodes)), 'Empresas', color='skyblue', fontweight='bold')
@@ -669,44 +554,43 @@ plt.show()
 
 print("Visualização gerada com sucesso!")
 
-# Bloco 3: Análise das métricas do grafo
-print("--- Iteração 3: Analisando o Grafo ---")
+# Análise das métricas do grafo
+print("Métricas do grafo")
 
-# Calcular grau de cada nó
+# Calcula grau de cada nó
 graus = B.degree()
 nx.set_node_attributes(B, dict(graus), 'grau')
 
-# Identificar a empresa e unidade com maior grau
+# Identifica empresa e unidade com maior grau
 graus_empresas = {n: g for n, g in graus if B.nodes[n]['bipartite'] == 0}
-top_empresa = sorted(graus_empresas.items(), key=lambda x: x[1], reverse=True)[0] # Corrected index to 1 and get the top one
-print(f"Empresa mais conectada: '{top_empresa[0]}' com {top_empresa[1]} conexões.") # Corrected indexing for printing
+top_empresa = sorted(graus_empresas.items(), key=lambda x: x[1], reverse=True)[0] # corrige index pra 1 e pega o maior
+print(f"Empresa mais conectada: '{top_empresa[0]}' com {top_empresa[1]} conexões.") # corrige index pra imprimir
 
 graus_unidades = {n: g for n, g in graus if B.nodes[n]['bipartite'] == 1}
-top_unidade = sorted(graus_unidades.items(), key=lambda x: x[1], reverse=True)[0] # Get the top one
-print(f"Unidade mais conectada: '{top_unidade[0]}' com {top_unidade[1]} conexões.") # Corrected indexing for printing
+top_unidade = sorted(graus_unidades.items(), key=lambda x: x[1], reverse=True)[0] # pega o maior
+print(f"Unidade mais conectada: '{top_unidade[0]}' com {top_unidade[1]} conexões.") # corrige index pra imprimir
 
 
-# Calcular a densidade da rede bipartida
-# Need to explicitly define the partitions for bipartite density
+# Calcula densidade da rede bipartida
+# precisa definir as partições pra densidade da rede bipartida
 empresas_nodes = [n for n, data in B.nodes(data=True) if data['bipartite'] == 0]
 unidades_nodes = [n for n, data in B.nodes(data=True) if data['bipartite'] == 1]
-densidade_b = nx.bipartite.density(B, nodes=empresas_nodes) # Pass one set of nodes
+densidade_b = nx.bipartite.density(B, nodes=empresas_nodes) # Passa um conjunto de nós
 
 print(f"Densidade da rede bipartida: {densidade_b:.4f}")
-print("-" * 50 + "\n")
 
-# Bloco 4: Visualização interativa com Plotly
-print("--- Iteração 4: Gerando Visualização Interativa com Plotly ---")
+# Visualização interativa
 
-# 1. Calcular a posição dos nós usando o layout bipartido do NetworkX
-pos = nx.bipartite_layout(B, empresas)
+# usa o layout bipartido do NetworkX p/ calcular posição dos nós
+pos = nx.bipartite_layout(B, empresas_nodes) # Use empresas_nodes here
 
-# 2. Criar o trace das arestas
+
+# Cria o trace das arestas
 edge_x = []
 edge_y = []
 for edge in B.edges():
-    x0, y0 = pos[edge[0]] # Get the position of the first node in the edge tuple
-    x1, y1 = pos[edge[1]] # Get the position of the second node in the edge tuple
+    x0, y0 = pos[edge[0]] # pega a posição do nó 1 na edge tuple
+    x1, y1 = pos[edge[1]] # pega a posição do nó 2 na edge tuple
     edge_x.extend([x0, x1, None])
     edge_y.extend([y0, y1, None])
 
@@ -716,7 +600,7 @@ edge_trace = go.Scatter(
     hoverinfo='none',
     mode='lines')
 
-# 3. Criar o trace dos nós
+# Cria o trace dos nós
 node_x = []
 node_y = []
 node_text = []
@@ -728,7 +612,7 @@ for node in B.nodes():
     node_x.append(x)
     node_y.append(y)
 
-    # Adicionar informações para o hover e estilo
+    # informações de hover e estilo
     grau = B.nodes[node]['grau']
     tipo = B.nodes[node]['tipo']
     node_text.append(f"<b>{node}</b><br>Tipo: {tipo}<br>Conexões: {grau}")
@@ -746,25 +630,25 @@ node_trace = go.Scatter(
         size=node_size,
         line_width=2))
 
-# 4. Criar a figura e exibir
+# Cria a figura e exibe
 fig = go.Figure(data=[edge_trace, node_trace],
              layout=go.Layout(
                 title='<br>Grafo Bipartido Interativo: Relações entre Empresas e Unidades',
-                titlefont_size=16,
+                titlefont_size=18,
                 showlegend=False,
                 hovermode='closest',
-                margin=dict(b=20,l=5,r=5,t=40),
+                margin=dict(b=20,l=5,r=5,t=80),
                 annotations=[ dict(
                     text="Passe o mouse sobre um nó para ver os detalhes. Use o zoom para explorar.",
                     showarrow=False,
                     xref="paper", yref="paper",
                     x=0.005, y=-0.002 ) ],
                 xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
+                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+                height=800)
                 )
 
 fig.show()
 
 print("Visualização interativa gerada! Verifique a nova janela/aba do seu navegador.")
-print("-" * 50 + "\n")
-print("Processo iterativo concluído!")
+print("\nProcesso iterativo concluído!")
